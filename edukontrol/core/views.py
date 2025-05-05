@@ -1,3 +1,64 @@
+from rest_framework.decorators import api_view
+from rest_framework.response import Response
+from .models import School, Student, Test, Question, Answer, Score, Rating
+from .serializers import (
+    SchoolSerializer, StudentSerializer, TestSerializer,
+    QuestionSerializer, AnswerSerializer, ScoreSerializer, RatingSerializer
+)
+from django.db.models import Sum, F
+
+@api_view(['GET'])
+def school_internal_scores(request, school_id, test_type):
+    """
+    Faqat maktab ichida haftalik yoki oylik test natijalarini ko‘rsatadi.
+    test_type: 'weekly' yoki 'monthly'
+    """
+    if test_type not in ['weekly', 'monthly']:
+        return Response({"status": "error", "message": "Noto'g'ri test turi!"}, status=400)
+
+    students = Student.objects.filter(school_id=school_id)
+    data = []
+    for student in students:
+        scores = Score.objects.filter(student=student, test__test_type=test_type)
+        for score in scores:
+            data.append({
+                'student': student.user.get_full_name(),
+                'test': score.test.subject,
+                'raw_score': score.raw_score,
+                'weighted_score': score.weighted_score,
+                'submitted_at': score.submitted_at,
+            })
+    return Response({
+        "status": "success",
+        "school_id": school_id,
+        "test_type": test_type,
+        "results": data
+    })
+
+@api_view(['GET'])
+def top_10_schools(request, level):
+    """
+    Eng yaxshi 10 ta maktabni ko‘rsatadi (level: district, region, nation)
+    """
+    if level not in ['district', 'region', 'nation']:
+        return Response({"status": "error", "message": "Noto'g'ri daraja!"}, status=400)
+
+    from django.db.models import Sum
+    from .models import School, Rating
+    rankings = Rating.objects.filter(level=level).values('school').annotate(total_score=Sum('total_score')).order_by('-total_score')[:10]
+    data = []
+    for rank in rankings:
+        school = School.objects.get(id=rank['school'])
+        data.append({
+            'school_name': school.name,
+            'total_score': rank['total_score'],
+            'level': level,
+        })
+    return Response({
+        "status": "success",
+        "level": level,
+        "top_schools": data
+    })
 from rest_framework import viewsets
 from .models import School, Student, Test, Question, Answer, Score, Rating
 from .serializers import (
@@ -62,13 +123,13 @@ def update_ratings(request):
         quarter_scores = Score.objects.filter(
             student=student,
             test__test_type='quarter'
-        ).aggregate(total=Sum('score'))['total'] or 0
+        ).aggregate(total=Sum('weighted_score'))['total'] or 0
 
         # Yillik testlar (koeffitsiyent: 2x)
         annual_scores = Score.objects.filter(
             student=student,
             test__test_type='annual'
-        ).aggregate(total=Sum('score'))['total'] or 0
+        ).aggregate(total=Sum('weighted_score'))['total'] or 0
         annual_scores *= 2
 
         # Final (bitiruv) testlar (koeffitsiyent: 3x, faqat 9 va 11-sinflar uchun)
@@ -77,7 +138,7 @@ def update_ratings(request):
             final_scores = Score.objects.filter(
                 student=student,
                 test__test_type='final'
-            ).aggregate(total=Sum('score'))['total'] or 0
+            ).aggregate(total=Sum('weighted_score'))['total'] or 0
             final_scores *= 3
 
         total_score = quarter_scores + annual_scores + final_scores
